@@ -15,7 +15,7 @@ Student portal, lecturer portal, and admin panel — one codebase, role-based ro
 - **Lecturer** — sign up, course list, "Start class" (triggers push to enrolled students), timetable builder, live attendance scanner with automatic face matching + manual fallback, Excel export on class end
 - **Admin** — departments, courses, lecturer assignment, read-only roster of all students/lecturers with face-enrolment status
 
-## Getting it running
+## Getting it runningg
 
 ### 1. Supabase project
 1. Create a project at supabase.com.
