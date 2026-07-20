@@ -3,7 +3,7 @@ import * as faceapi from 'face-api.js'
 import { Camera, CheckCircle2, Loader2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
-const MODEL_URL = '/models'
+const MODEL_URL = '/models/weights'
 
 /**
  * One-time capture used during onboarding. Takes 3 samples and averages

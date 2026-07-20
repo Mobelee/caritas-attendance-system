@@ -7,7 +7,7 @@ import { supabase } from '../../lib/supabase'
 import Shell from '../../components/Shell'
 
 const MATCH_THRESHOLD = 0.5 // lower = stricter. Tune against real enrolment data.
-const MODEL_URL = '/models' // see /public/models — download from face-api.js weights repo
+const MODEL_URL = '/models/weights' // see /public/models/weights — face-api.js weight files
 
 export default function AttendanceScanner({ profile }) {
   const { sessionId } = useParams()
