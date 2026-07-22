@@ -328,16 +328,44 @@ function StudentFaceScanModal({ studentId, activeSession, onClose, onSuccess }) 
       const distance = faceapi.euclideanDistance(detection.descriptor, storedDescriptor)
 
       if (distance < MATCH_THRESHOLD) {
-        const { error: insertError } = await supabase.from('attendance').insert({
-          session_id: activeSession.id,
-          student_id: studentId,
-          marked_at: new Date().toISOString(),
-          method: 'face_recognition',
-          confidence: Number((1 - distance).toFixed(4))
-        })
+        let saved = false
+        const confidenceVal = Number((1 - distance).toFixed(4))
 
-        if (insertError) {
-          setError(insertError.message || 'Could not save attendance record.')
+        const { error: insertError } = await supabase.from('attendance').upsert(
+          {
+            session_id: activeSession.id,
+            student_id: studentId,
+            marked_at: new Date().toISOString(),
+            method: 'face_recognition',
+            confidence: confidenceVal
+          },
+          { onConflict: 'session_id,student_id' }
+        )
+
+        if (!insertError) {
+          saved = true
+        } else {
+          // Automatic fallback to backend service-role API endpoint
+          try {
+            const res = await fetch(`${import.meta.env.VITE_API_URL}/attendance/mark`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: activeSession.id,
+                student_id: studentId,
+                method: 'face_recognition',
+                confidence: confidenceVal
+              })
+            })
+            const data = await res.json()
+            if (res.ok && data.ok) saved = true
+          } catch (e) {
+            console.error('Backend fallback error:', e)
+          }
+        }
+
+        if (!saved) {
+          setError('Could not save attendance record — please ask lecturer to mark manually.')
           setScanning(false)
           return
         }
