@@ -33,6 +33,18 @@ export default function AttendanceScanner({ profile }) {
   }, [sessionId])
 
   async function init() {
+    try {
+      if (faceapi.tf) {
+        await faceapi.tf.setBackend('webgl').catch(async () => {
+          console.warn('WebGL unavailable, switching to CPU backend')
+          await faceapi.tf.setBackend('cpu')
+        })
+        await faceapi.tf.ready()
+      }
+    } catch (e) {
+      console.warn('Backend init error:', e)
+    }
+
     await Promise.all([
       faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
       faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),

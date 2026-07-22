@@ -44,6 +44,7 @@ create policy "profiles_admin_read" on profiles for select using (is_admin());
 create policy "students_admin_all" on students for all using (is_admin());
 create policy "lecturers_admin_all" on lecturers for all using (is_admin());
 create policy "timetable_admin_write" on timetable for all using (is_admin());
+create policy "attendance_student_insert" on attendance for insert with check (student_id = auth.uid());
 
 -- Departments table needs RLS enabled (was created without it in schema.sql)
 alter table departments enable row level security;

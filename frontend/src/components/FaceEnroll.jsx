@@ -20,13 +20,24 @@ export default function FaceEnroll({ studentId, onDone }) {
   useEffect(() => {
     let stream
     ;(async () => {
+      try {
+        if (faceapi.tf) {
+          await faceapi.tf.setBackend('webgl').catch(async () => {
+            console.warn('WebGL unavailable, switching to CPU backend')
+            await faceapi.tf.setBackend('cpu')
+          })
+          await faceapi.tf.ready()
+        }
+      } catch (e) {
+        console.warn('Backend init error:', e)
+      }
       await Promise.all([
         faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
         faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
         faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
       ])
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
-      videoRef.current.srcObject = stream
+      if (videoRef.current) videoRef.current.srcObject = stream
       setReady(true)
     })()
     return () => stream?.getTracks().forEach((t) => t.stop())

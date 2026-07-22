@@ -13,7 +13,14 @@ async function createUser(email, fullName) {
     password: DEMO_PASSWORD,
     email_confirm: true
   })
-  if (error) throw new Error(`createUser(${email}): ${error.message}`)
+  if (error) {
+    if (error.message.includes('already been registered')) {
+      const { data: users } = await supabaseAdmin.auth.admin.listUsers()
+      const existing = users?.users?.find((u) => u.email === email)
+      if (existing) return existing.id
+    }
+    throw new Error(`createUser(${email}): ${error.message}`)
+  }
   return data.user.id
 }
 
@@ -21,34 +28,52 @@ async function main() {
   console.log('Seeding demo data…')
 
   // 1. Department
-  const { data: dept } = await supabaseAdmin
+  let { data: dept } = await supabaseAdmin
     .from('departments')
-    .insert({ name: 'Computer Engineering', code: 'CPE' })
     .select()
+    .eq('code', 'CEE')
     .single()
-  console.log('✓ department:', dept.name)
+
+  if (!dept) {
+    const { data: inserted } = await supabaseAdmin
+      .from('departments')
+      .insert({ name: 'Computer & Electronic Engineering', code: 'CEE' })
+      .select()
+      .single()
+    dept = inserted
+  }
+  console.log('✓ department:', dept.name, `(${dept.code})`)
 
   // 2. Lecturer
   const lecturerId = await createUser('lecturer.demo@caritasuni.edu.ng', 'Dr. Ada Nwosu')
-  await supabaseAdmin.from('profiles').insert({
+  await supabaseAdmin.from('profiles').upsert({
     id: lecturerId, role: 'lecturer', full_name: 'Dr. Ada Nwosu', email: 'lecturer.demo@caritasuni.edu.ng'
   })
-  await supabaseAdmin.from('lecturers').insert({ id: lecturerId, staff_id: 'CPE-STAFF-01', department_id: dept.id })
+  await supabaseAdmin.from('lecturers').upsert({ id: lecturerId, staff_id: 'CEE-STAFF-01', department_id: dept.id })
   console.log('✓ lecturer:', 'lecturer.demo@caritasuni.edu.ng', '/', DEMO_PASSWORD)
 
   // 3. Admin
   const adminId = await createUser('admin.demo@caritasuni.edu.ng', 'Portal Admin')
-  await supabaseAdmin.from('profiles').insert({
+  await supabaseAdmin.from('profiles').upsert({
     id: adminId, role: 'admin', full_name: 'Portal Admin', email: 'admin.demo@caritasuni.edu.ng'
   })
   console.log('✓ admin:', 'admin.demo@caritasuni.edu.ng', '/', DEMO_PASSWORD)
 
   // 4. Course
-  const { data: course } = await supabaseAdmin
+  let { data: course } = await supabaseAdmin
     .from('courses')
-    .insert({ code: 'CPE 415', title: 'Embedded Systems Design', department_id: dept.id, level: 400, lecturer_id: lecturerId })
     .select()
+    .eq('code', 'CEE 415')
     .single()
+
+  if (!course) {
+    const { data: insertedCourse } = await supabaseAdmin
+      .from('courses')
+      .insert({ code: 'CEE 415', title: 'Embedded Systems Design', department_id: dept.id, level: 400, lecturer_id: lecturerId })
+      .select()
+      .single()
+    course = insertedCourse
+  }
   console.log('✓ course:', course.code)
 
   // 5. Timetable slot — today, 5 minutes from now, so it's easy to demo reminders
@@ -65,17 +90,17 @@ async function main() {
 
   // 6. Students
   const students = [
-    { email: 'student1.demo@caritasuni.edu.ng', name: 'Chinedu Okafor', reg: '2021/CPE/001' },
-    { email: 'student2.demo@caritasuni.edu.ng', name: 'Amaka Eze', reg: '2021/CPE/002' },
-    { email: 'student3.demo@caritasuni.edu.ng', name: 'Tunde Bello', reg: '2021/CPE/003' }
+    { email: 'student1.demo@caritasuni.edu.ng', name: 'Chinedu Okafor', reg: '2021/CEE/001' },
+    { email: 'student2.demo@caritasuni.edu.ng', name: 'Amaka Eze', reg: '2021/CEE/002' },
+    { email: 'student3.demo@caritasuni.edu.ng', name: 'Tunde Bello', reg: '2021/CEE/003' }
   ]
 
   for (const s of students) {
     const id = await createUser(s.email, s.name)
-    await supabaseAdmin.from('profiles').insert({ id, role: 'student', full_name: s.name, email: s.email })
-    await supabaseAdmin.from('students').insert({ id, reg_no: s.reg, department_id: dept.id, level: 400 })
-    await supabaseAdmin.from('enrollments').insert({ student_id: id, course_id: course.id })
-    console.log(`✓ student: ${s.email} / ${DEMO_PASSWORD} (reg ${s.reg}) — remember to run face enrolment for this one on first login`)
+    await supabaseAdmin.from('profiles').upsert({ id, role: 'student', full_name: s.name, email: s.email })
+    await supabaseAdmin.from('students').upsert({ id, reg_no: s.reg, department_id: dept.id, level: 400 })
+    await supabaseAdmin.from('enrollments').upsert({ student_id: id, course_id: course.id }, { onConflict: 'student_id,course_id' })
+    console.log(`✓ student: ${s.email} / ${DEMO_PASSWORD} (reg ${s.reg})`)
   }
 
   console.log('\nDone. All demo accounts use the password:', DEMO_PASSWORD)

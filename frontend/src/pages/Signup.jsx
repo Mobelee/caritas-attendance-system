@@ -141,7 +141,7 @@ export default function Signup() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label">Reg number</label>
-                <input required className="input" value={form.reg_no} onChange={(e) => update('reg_no', e.target.value)} placeholder="2021/CPE/001" />
+                <input required className="input" value={form.reg_no} onChange={(e) => update('reg_no', e.target.value)} placeholder="2021/CEE/001" />
               </div>
               <div>
                 <label className="label">Level</label>
