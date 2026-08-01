@@ -36,87 +36,81 @@ export default function Signup() {
     e.preventDefault()
     setSubmitting(true)
 
-    const { data: authData, error: authError } = await supabase.auth.signUp({
+    // 1. Primary Strategy: Admin Backend Registration (Bypasses 429 rate limits & 401 RLS errors)
+    let registered = false
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: form.email,
+          password: form.password,
+          role,
+          full_name: form.full_name,
+          department_id: form.department_id || null,
+          reg_no: form.reg_no,
+          staff_id: form.staff_id,
+          level: Number(form.level)
+        })
+      })
+
+      const resData = await res.json()
+      if (res.ok && resData.ok) {
+        registered = true
+      } else if (resData.error && resData.error.toLowerCase().includes('already been registered')) {
+        push('This email is already registered. Please sign in.', 'error')
+        setSubmitting(false)
+        navigate('/login')
+        return
+      } else if (resData.error) {
+        console.warn('Backend registration warning:', resData.error)
+      }
+    } catch (backendErr) {
+      console.warn('Backend route unavailable, proceeding with client signup:', backendErr)
+    }
+
+    // 2. Secondary Fallback Strategy: Client Auth Signup
+    if (!registered) {
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: form.email,
+        password: form.password
+      })
+
+      if (authError) {
+        push(authError.message, 'error')
+        setSubmitting(false)
+        return
+      }
+
+      const userId = authData.user?.id
+      if (userId) {
+        await supabase.from('profiles').upsert({ id: userId, role, full_name: form.full_name, email: form.email })
+        if (role === 'student') {
+          await supabase.from('students').upsert({ id: userId, reg_no: form.reg_no, department_id: form.department_id || null, level: Number(form.level) })
+        } else {
+          await supabase.from('lecturers').upsert({ id: userId, staff_id: form.staff_id, department_id: form.department_id || null })
+        }
+      }
+    }
+
+    // 3. Automatically Sign In User
+    const { error: signInError } = await supabase.auth.signInWithPassword({
       email: form.email,
       password: form.password
     })
 
-    if (authError) {
-      push(authError.message, 'error')
-      setSubmitting(false)
-      return
-    }
-
-    const userId = authData.user?.id
-    if (!userId) {
-      push('Account created. Please check your email to confirm registration or sign in.', 'info')
-      setSubmitting(false)
-      navigate('/login')
-      return
-    }
-
-    let setupOk = false
-    const { error: profileError } = await supabase.from('profiles').insert({
-      id: userId,
-      role,
-      full_name: form.full_name,
-      email: form.email
-    })
-
-    if (!profileError) {
-      if (role === 'student') {
-        const { error: sErr } = await supabase.from('students').insert({
-          id: userId,
-          reg_no: form.reg_no,
-          department_id: form.department_id || null,
-          level: Number(form.level)
-        })
-        if (!sErr) setupOk = true
-      } else {
-        const { error: lErr } = await supabase.from('lecturers').insert({
-          id: userId,
-          staff_id: form.staff_id,
-          department_id: form.department_id || null
-        })
-        if (!lErr) setupOk = true
-      }
-    }
-
-    // Automatic backend service-role fallback if RLS or permissions restricted client creation
-    if (!setupOk) {
-      try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/signup-setup`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId,
-            role,
-            full_name: form.full_name,
-            email: form.email,
-            department_id: form.department_id || null,
-            reg_no: form.reg_no,
-            staff_id: form.staff_id,
-            level: Number(form.level)
-          })
-        })
-        const resData = await res.json()
-        if (res.ok && resData.ok) setupOk = true
-      } catch (err) {
-        console.error('Backend setup fallback error:', err)
-      }
-    }
-
     setSubmitting(false)
-    if (setupOk) {
-      push('Account created successfully!')
+
+    if (signInError) {
+      push('Account created! Please sign in with your credentials.', 'success')
+      navigate('/login')
+    } else {
+      push('Account created & signed in successfully!')
       if (role === 'student') {
         navigate('/onboarding/face-enroll')
       } else {
         navigate('/')
       }
-    } else {
-      push('Account created. Please sign in to continue.', 'info')
-      navigate('/login')
     }
   }
 

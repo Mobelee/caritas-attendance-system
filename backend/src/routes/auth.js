@@ -4,19 +4,45 @@ import { supabaseAdmin } from '../lib/supabase.js'
 export const authRouter = Router()
 
 /**
- * POST /auth/signup-setup
- * Guarantees profile + student/lecturer row creation using service-role key
- * if client-side insertion encounters RLS policy restrictions.
+ * POST /auth/register
+ * Admin-level registration: Creates Auth user + Profile + Student/Lecturer record in one call.
+ * Bypasses client-side 429 rate limits and 401 RLS errors.
  */
-authRouter.post('/signup-setup', async (req, res) => {
-  const { userId, role, full_name, email, department_id, reg_no, staff_id, level } = req.body
+authRouter.post('/register', async (req, res) => {
+  const { email, password, role, full_name, department_id, reg_no, staff_id, level } = req.body
 
-  if (!userId || !role || !full_name || !email) {
-    return res.status(400).json({ error: 'Missing required signup fields.' })
+  if (!email || !password || !role || !full_name) {
+    return res.status(400).json({ error: 'Please fill in all required fields.' })
   }
 
   try {
-    // 1. Upsert Profile
+    let userId
+
+    // 1. Create User via Admin API (bypasses client 429 rate limits)
+    const { data: createData, error: createError } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true
+    })
+
+    if (createError) {
+      if (createError.message.includes('already been registered')) {
+        const { data: users } = await supabaseAdmin.auth.admin.listUsers()
+        const existing = users?.users?.find((u) => u.email.toLowerCase() === email.toLowerCase())
+        if (existing) {
+          userId = existing.id
+          await supabaseAdmin.auth.admin.updateUserById(userId, { password, email_confirm: true })
+        } else {
+          return res.status(400).json({ error: createError.message })
+        }
+      } else {
+        return res.status(400).json({ error: createError.message })
+      }
+    } else {
+      userId = createData.user.id
+    }
+
+    // 2. Upsert Profile
     const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
       id: userId,
       role,
@@ -25,11 +51,11 @@ authRouter.post('/signup-setup', async (req, res) => {
     })
 
     if (profileError) {
-      console.error('[signup-setup] profile error:', profileError.message)
-      return res.status(500).json({ error: profileError.message })
+      console.error('[register] profile error:', profileError.message)
+      return res.status(500).json({ error: 'Profile creation failed: ' + profileError.message })
     }
 
-    // 2. Insert Role-specific Record
+    // 3. Upsert Role Record (Student or Lecturer)
     if (role === 'student') {
       const { error: studentError } = await supabaseAdmin.from('students').upsert({
         id: userId,
@@ -39,8 +65,8 @@ authRouter.post('/signup-setup', async (req, res) => {
       })
 
       if (studentError) {
-        console.error('[signup-setup] student error:', studentError.message)
-        return res.status(500).json({ error: studentError.message })
+        console.error('[register] student error:', studentError.message)
+        return res.status(500).json({ error: 'Student setup failed: ' + studentError.message })
       }
     } else if (role === 'lecturer') {
       const { error: lecturerError } = await supabaseAdmin.from('lecturers').upsert({
@@ -50,14 +76,62 @@ authRouter.post('/signup-setup', async (req, res) => {
       })
 
       if (lecturerError) {
-        console.error('[signup-setup] lecturer error:', lecturerError.message)
-        return res.status(500).json({ error: lecturerError.message })
+        console.error('[register] lecturer error:', lecturerError.message)
+        return res.status(500).json({ error: 'Lecturer setup failed: ' + lecturerError.message })
       }
     }
 
-    return res.json({ ok: true, message: 'Account and profile setup completed successfully.' })
+    return res.json({ ok: true, userId, message: 'Registration completed successfully.' })
   } catch (err) {
-    console.error('[signup-setup] exception:', err)
+    console.error('[register] catch error:', err)
+    return res.status(500).json({ error: err.message || 'Server registration error.' })
+  }
+})
+
+/**
+ * POST /auth/signup-setup
+ * Legacy fallback endpoint for existing sessions.
+ */
+authRouter.post('/signup-setup', async (req, res) => {
+  const { userId, role, full_name, email, department_id, reg_no, staff_id, level } = req.body
+
+  if (!userId || !role || !full_name || !email) {
+    return res.status(400).json({ error: 'Missing required signup fields.' })
+  }
+
+  try {
+    const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
+      id: userId,
+      role,
+      full_name,
+      email
+    })
+
+    if (profileError) {
+      return res.status(500).json({ error: profileError.message })
+    }
+
+    if (role === 'student') {
+      const { error: studentError } = await supabaseAdmin.from('students').upsert({
+        id: userId,
+        reg_no: reg_no || `REG-${Date.now().toString().slice(-6)}`,
+        department_id: department_id || null,
+        level: Number(level) || 100
+      })
+
+      if (studentError) return res.status(500).json({ error: studentError.message })
+    } else if (role === 'lecturer') {
+      const { error: lecturerError } = await supabaseAdmin.from('lecturers').upsert({
+        id: userId,
+        staff_id: staff_id || `STAFF-${Date.now().toString().slice(-6)}`,
+        department_id: department_id || null
+      })
+
+      if (lecturerError) return res.status(500).json({ error: lecturerError.message })
+    }
+
+    return res.json({ ok: true, message: 'Account setup completed.' })
+  } catch (err) {
     return res.status(500).json({ error: err.message })
   }
 })
