@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import * as faceapi from 'face-api.js'
 import * as XLSX from 'xlsx'
-import { CheckCircle2, ScanFace, Square, UserCheck, Users } from 'lucide-react'
+import { CheckCircle2, Download, ScanFace, Square, UserCheck, Users } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import Shell from '../../components/Shell'
+import { useToast } from '../../hooks/useToast'
 
 const MATCH_THRESHOLD = 0.5 // lower = stricter. Tune against real enrolment data.
 const MODEL_URL = '/models/weights' // see /public/models/weights — face-api.js weight files
@@ -15,10 +16,11 @@ export default function AttendanceScanner({ profile }) {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const intervalRef = useRef(null)
+  const { push } = useToast()
 
   const [session, setSession] = useState(null)
   const [roster, setRoster] = useState([]) // { id, full_name, reg_no, descriptor }
-  const [marked, setMarked] = useState(new Map()) // student_id -> timestamp
+  const [marked, setMarked] = useState(new Map()) // student_id -> { time: Date, method: string }
   const [modelsReady, setModelsReady] = useState(false)
   const [ending, setEnding] = useState(false)
 
@@ -54,7 +56,7 @@ export default function AttendanceScanner({ profile }) {
 
     const { data: sessionRow } = await supabase
       .from('class_sessions')
-      .select('*, course:courses(code, title)')
+      .select('*, course:courses(code, title, department:departments(name, code))')
       .eq('id', sessionId)
       .single()
     setSession(sessionRow)
@@ -64,21 +66,33 @@ export default function AttendanceScanner({ profile }) {
       .select('student:students(id, reg_no, face_descriptor, profile:profiles(full_name))')
       .eq('course_id', sessionRow.course_id)
 
-    // Students without a stored descriptor still appear on the roster —
-    // they just can't be matched automatically, only marked manually.
     setRoster(
       (enrolled ?? [])
         .map((e) => e.student)
         .map((s) => ({
           id: s.id,
           reg_no: s.reg_no,
-          full_name: s.profile.full_name,
+          full_name: s.profile?.full_name || 'Student',
           descriptor: s.face_descriptor ? new Float32Array(s.face_descriptor) : null
         }))
     )
 
+    // Load existing attendance records for this session
+    const { data: existingAtt } = await supabase
+      .from('attendance')
+      .select('student_id, marked_at, method')
+      .eq('session_id', sessionId)
+
+    if (existingAtt && existingAtt.length > 0) {
+      const attMap = new Map()
+      existingAtt.forEach((rec) => {
+        attMap.set(rec.student_id, { time: new Date(rec.marked_at), method: rec.method || 'face_recognition' })
+      })
+      setMarked(attMap)
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-    videoRef.current.srcObject = stream
+    if (videoRef.current) videoRef.current.srcObject = stream
 
     intervalRef.current = setInterval(scanFrame, 1200)
   }
@@ -98,20 +112,20 @@ export default function AttendanceScanner({ profile }) {
         if (distance < best.distance) best = { student, distance }
       }
       if (best.student && best.distance < MATCH_THRESHOLD) {
-        markAttendance(best.student, 1 - best.distance)
+        markAttendance(best.student, 1 - best.distance, 'face_recognition')
       }
     }
   }
 
   async function markAttendance(student, confidence, method = 'face_recognition') {
+    const markTime = new Date()
     setMarked((prev) => {
       if (prev.has(student.id)) return prev
       const next = new Map(prev)
-      next.set(student.id, new Date())
+      next.set(student.id, { time: markTime, method })
       return next
     })
 
-    // Guarded by a unique (session_id, student_id) constraint — safe to fire repeatedly
     await supabase
       .from('attendance')
       .upsert(
@@ -119,7 +133,8 @@ export default function AttendanceScanner({ profile }) {
           session_id: sessionId,
           student_id: student.id,
           confidence: confidence != null ? Number(confidence.toFixed(4)) : null,
-          method
+          method,
+          marked_at: markTime.toISOString()
         },
         { onConflict: 'session_id,student_id', ignoreDuplicates: true }
       )
@@ -134,22 +149,66 @@ export default function AttendanceScanner({ profile }) {
 
     exportExcel()
     setEnding(false)
+    push('Class session ended. Attendance Excel report downloaded!')
     navigate('/')
   }
 
   function exportExcel() {
-    const rows = roster.map((s) => ({
-      Name: s.full_name,
-      'Reg No': s.reg_no,
-      Department: session?.course?.code?.split(' ')[0] ?? '',
-      'Date & Time': marked.has(s.id) ? marked.get(s.id).toLocaleString() : 'Absent',
-      'Lecturer Name': profile.full_name,
-      Status: marked.has(s.id) ? 'Present' : 'Absent'
-    }))
-    const sheet = XLSX.utils.json_to_sheet(rows)
+    const deptName = session?.course?.department?.name || 'Computer & Electronic Engineering'
+    const courseCode = session?.course?.code || 'CEE 415'
+    const courseTitle = session?.course?.title || 'Embedded Systems Design'
+    const sessionDate = session?.session_date || new Date().toISOString().slice(0, 10)
+    const startTime = session?.actual_start ? new Date(session.actual_start).toLocaleTimeString() : 'N/A'
+    const endTime = new Date().toLocaleTimeString()
+
+    const reportRows = [
+      ['CARITAS UNIVERSITY AMORJI-NIKE'],
+      ['FACULTY OF ENGINEERING — CLASS ATTENDANCE REGISTER'],
+      [''],
+      ['Institution:', 'Caritas University Amorji-Nike, Enugu State'],
+      ['Department:', deptName],
+      ['Course Code & Title:', `${courseCode} — ${courseTitle}`],
+      ['Lecturer Name:', profile?.full_name || 'Lecturer'],
+      ['Session Date:', sessionDate],
+      ['Class Duration:', `${startTime} to ${endTime}`],
+      ['Academic Session:', '2025/2026 Session'],
+      ['Summary:', `Total Enrolled: ${roster.length} | Total Present: ${marked.size} | Total Absent: ${roster.length - marked.size}`],
+      [''],
+      ['S/N', 'Student Full Name', 'Registration Number', 'Time Marked', 'Verification Method', 'Attendance Status']
+    ]
+
+    roster.forEach((student, index) => {
+      const record = marked.get(student.id)
+      const isPresent = Boolean(record)
+      const timeStr = isPresent && record.time ? record.time.toLocaleTimeString() : '-'
+      const methodStr = isPresent ? (record.method === 'manual' ? 'Manual Check' : 'Facial Recognition') : 'N/A'
+
+      reportRows.push([
+        index + 1,
+        student.full_name,
+        student.reg_no,
+        timeStr,
+        methodStr,
+        isPresent ? 'PRESENT' : 'ABSENT'
+      ])
+    })
+
+    const sheet = XLSX.utils.aoa_to_sheet(reportRows)
+
+    // Apply auto-fit column widths
+    sheet['!cols'] = [
+      { wch: 6 },  // S/N
+      { wch: 32 }, // Student Name
+      { wch: 22 }, // Registration Number
+      { wch: 16 }, // Time Marked
+      { wch: 24 }, // Verification Method
+      { wch: 15 }  // Attendance Status
+    ]
+
     const workbook = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(workbook, sheet, 'Attendance')
-    const filename = `${session?.course?.code ?? 'attendance'}-${new Date().toISOString().slice(0, 10)}.xlsx`
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Attendance Report')
+    const cleanCode = courseCode.replace(/[^a-zA-Z0-9]/g, '_')
+    const filename = `CARITAS_${cleanCode}_Attendance_${sessionDate}.xlsx`
     XLSX.writeFile(workbook, filename)
   }
 
@@ -158,9 +217,14 @@ export default function AttendanceScanner({ profile }) {
       title={session?.course?.code ?? 'Live session'}
       subtitle={`${marked.size} of ${roster.length} marked present`}
       actions={
-        <button onClick={endClass} disabled={ending} className="btn-primary">
-          <Square className="h-4 w-4" /> End class
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={exportExcel} type="button" className="btn-secondary">
+            <Download className="h-4 w-4" /> Download Excel
+          </button>
+          <button onClick={endClass} disabled={ending} className="btn-primary">
+            <Square className="h-4 w-4" /> End class
+          </button>
+        </div>
       }
     >
       <div className="card relative mb-6 aspect-video overflow-hidden bg-ink">

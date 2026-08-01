@@ -47,8 +47,15 @@ export default function Signup() {
       return
     }
 
-    const userId = authData.user.id
+    const userId = authData.user?.id
+    if (!userId) {
+      push('Account created. Please check your email to confirm registration or sign in.', 'info')
+      setSubmitting(false)
+      navigate('/login')
+      return
+    }
 
+    let setupOk = false
     const { error: profileError } = await supabase.from('profiles').insert({
       id: userId,
       role,
@@ -56,31 +63,61 @@ export default function Signup() {
       email: form.email
     })
 
-    if (profileError) {
-      push('Account created but profile setup failed — contact admin.', 'error')
-      setSubmitting(false)
-      return
+    if (!profileError) {
+      if (role === 'student') {
+        const { error: sErr } = await supabase.from('students').insert({
+          id: userId,
+          reg_no: form.reg_no,
+          department_id: form.department_id || null,
+          level: Number(form.level)
+        })
+        if (!sErr) setupOk = true
+      } else {
+        const { error: lErr } = await supabase.from('lecturers').insert({
+          id: userId,
+          staff_id: form.staff_id,
+          department_id: form.department_id || null
+        })
+        if (!lErr) setupOk = true
+      }
     }
 
-    if (role === 'student') {
-      await supabase.from('students').insert({
-        id: userId,
-        reg_no: form.reg_no,
-        department_id: form.department_id || null,
-        level: Number(form.level)
-      })
-      navigate('/onboarding/face-enroll')
-    } else {
-      await supabase.from('lecturers').insert({
-        id: userId,
-        staff_id: form.staff_id,
-        department_id: form.department_id || null
-      })
-      navigate('/')
+    // Automatic backend service-role fallback if RLS or permissions restricted client creation
+    if (!setupOk) {
+      try {
+        const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/signup-setup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId,
+            role,
+            full_name: form.full_name,
+            email: form.email,
+            department_id: form.department_id || null,
+            reg_no: form.reg_no,
+            staff_id: form.staff_id,
+            level: Number(form.level)
+          })
+        })
+        const resData = await res.json()
+        if (res.ok && resData.ok) setupOk = true
+      } catch (err) {
+        console.error('Backend setup fallback error:', err)
+      }
     }
 
     setSubmitting(false)
-    push('Account created.')
+    if (setupOk) {
+      push('Account created successfully!')
+      if (role === 'student') {
+        navigate('/onboarding/face-enroll')
+      } else {
+        navigate('/')
+      }
+    } else {
+      push('Account created. Please sign in to continue.', 'info')
+      navigate('/login')
+    }
   }
 
   return (

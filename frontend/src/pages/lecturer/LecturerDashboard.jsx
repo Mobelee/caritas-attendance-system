@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { CalendarClock, Play, Plus, Trash2, Users, X } from 'lucide-react'
+import * as XLSX from 'xlsx'
+import { CalendarClock, Download, History, Play, Plus, Trash2, Users, X } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import Shell from '../../components/Shell'
 import { useToast } from '../../hooks/useToast'
 
 export default function LecturerDashboard({ profile }) {
   const [courses, setCourses] = useState([])
+  const [recentSessions, setRecentSessions] = useState([])
   const [departmentId, setDepartmentId] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -18,6 +20,7 @@ export default function LecturerDashboard({ profile }) {
 
   useEffect(() => {
     load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function load() {
@@ -28,12 +31,21 @@ export default function LecturerDashboard({ profile }) {
       .single()
     setDepartmentId(lecturer?.department_id || null)
 
-    const { data } = await supabase
+    const { data: coursesData } = await supabase
       .from('courses')
       .select('id, code, title, level, enrollments:enrollments(count)')
       .eq('lecturer_id', profile.id)
       .order('code')
-    setCourses(data ?? [])
+    setCourses(coursesData ?? [])
+
+    const { data: sessionsData } = await supabase
+      .from('class_sessions')
+      .select('id, session_date, status, actual_start, course_id, course:courses(code, title, department:departments(name, code))')
+      .eq('lecturer_id', profile.id)
+      .order('created_at', { ascending: false })
+      .limit(10)
+
+    setRecentSessions(sessionsData ?? [])
   }
 
   async function handleAddCourse(e) {
@@ -103,6 +115,78 @@ export default function LecturerDashboard({ profile }) {
     fetch(`${import.meta.env.VITE_API_URL}/notify/class-started/${session.id}`, { method: 'POST' }).catch(() => {})
 
     navigate(`/scan/${session.id}`)
+  }
+
+  async function downloadSessionExcel(sessionItem) {
+    push('Generating Excel report…')
+
+    const { data: enrolled } = await supabase
+      .from('enrollments')
+      .select('student:students(id, reg_no, profile:profiles(full_name))')
+      .eq('course_id', sessionItem.course_id)
+
+    const roster = (enrolled ?? []).map((e) => e.student).filter(Boolean)
+
+    const { data: attRecords } = await supabase
+      .from('attendance')
+      .select('student_id, marked_at, method')
+      .eq('session_id', sessionItem.id)
+
+    const attMap = new Map()
+    ;(attRecords ?? []).forEach((r) => {
+      attMap.set(r.student_id, { time: new Date(r.marked_at), method: r.method })
+    })
+
+    const deptName = sessionItem.course?.department?.name || 'Computer & Electronic Engineering'
+    const courseCode = sessionItem.course?.code || 'Course'
+    const courseTitle = sessionItem.course?.title || ''
+    const sessionDate = sessionItem.session_date || new Date().toISOString().slice(0, 10)
+
+    const reportRows = [
+      ['CARITAS UNIVERSITY AMORJI-NIKE'],
+      ['FACULTY OF ENGINEERING — CLASS ATTENDANCE REGISTER'],
+      [''],
+      ['Institution:', 'Caritas University Amorji-Nike, Enugu State'],
+      ['Department:', deptName],
+      ['Course Code & Title:', `${courseCode} — ${courseTitle}`],
+      ['Lecturer Name:', profile?.full_name || 'Lecturer'],
+      ['Session Date:', sessionDate],
+      ['Academic Session:', '2025/2026 Session'],
+      ['Summary:', `Total Enrolled: ${roster.length} | Total Present: ${attMap.size} | Total Absent: ${Math.max(0, roster.length - attMap.size)}`],
+      [''],
+      ['S/N', 'Student Full Name', 'Registration Number', 'Time Marked', 'Verification Method', 'Attendance Status']
+    ]
+
+    roster.forEach((student, index) => {
+      const record = attMap.get(student.id)
+      const isPresent = Boolean(record)
+      const timeStr = isPresent && record.time ? record.time.toLocaleTimeString() : '-'
+      const methodStr = isPresent ? (record.method === 'manual' ? 'Manual Check' : 'Facial Recognition') : 'N/A'
+
+      reportRows.push([
+        index + 1,
+        student.full_name || 'Student',
+        student.reg_no || 'N/A',
+        timeStr,
+        methodStr,
+        isPresent ? 'PRESENT' : 'ABSENT'
+      ])
+    })
+
+    const sheet = XLSX.utils.aoa_to_sheet(reportRows)
+    sheet['!cols'] = [
+      { wch: 6 },
+      { wch: 32 },
+      { wch: 22 },
+      { wch: 16 },
+      { wch: 24 },
+      { wch: 15 }
+    ]
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Attendance Report')
+    const cleanCode = courseCode.replace(/[^a-zA-Z0-9]/g, '_')
+    XLSX.writeFile(workbook, `CARITAS_${cleanCode}_Attendance_${sessionDate}.xlsx`)
   }
 
   return (
@@ -187,45 +271,84 @@ export default function LecturerDashboard({ profile }) {
         </div>
       )}
 
-      <ul className="space-y-3">
-        {courses.map((course) => (
-          <li key={course.id} className="card flex items-center gap-4 p-4">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-semibold text-ink">{course.code}</p>
-                <span className="rounded bg-canvas px-1.5 py-0.5 text-[10px] font-medium text-ink-soft">
-                  {course.level}L
-                </span>
+      {/* Courses List */}
+      <div className="mb-8">
+        <h2 className="mb-3 text-sm font-semibold text-ink flex items-center gap-2">
+          <Users className="h-4 w-4 text-ink-soft" /> Your Active Courses
+        </h2>
+        <ul className="space-y-3">
+          {courses.map((course) => (
+            <li key={course.id} className="card flex items-center gap-4 p-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold text-ink">{course.code}</p>
+                  <span className="rounded bg-canvas px-1.5 py-0.5 text-[10px] font-medium text-ink-soft">
+                    {course.level}L
+                  </span>
+                </div>
+                <p className="truncate text-xs text-ink-soft">{course.title}</p>
+                <p className="mt-1 flex items-center gap-1 text-xs text-ink-faint">
+                  <Users className="h-3.5 w-3.5" /> {course.enrollments?.[0]?.count ?? 0} enrolled
+                </p>
               </div>
-              <p className="truncate text-xs text-ink-soft">{course.title}</p>
-              <p className="mt-1 flex items-center gap-1 text-xs text-ink-faint">
-                <Users className="h-3.5 w-3.5" /> {course.enrollments?.[0]?.count ?? 0} enrolled
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button onClick={() => startClass(course.id)} className="btn-primary">
-                <Play className="h-4 w-4" /> Start class
+              <div className="flex items-center gap-2">
+                <button onClick={() => startClass(course.id)} className="btn-primary">
+                  <Play className="h-4 w-4" /> Start class
+                </button>
+                <button
+                  onClick={() => handleDeleteCourse(course.id, course.code)}
+                  disabled={deletingId === course.id}
+                  className="p-2 text-ink-soft hover:text-red hover:bg-red-light rounded"
+                  title="Delete course"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </li>
+          ))}
+          {courses.length === 0 && (
+            <div className="card p-6 text-center">
+              <p className="text-sm text-ink-soft mb-3">No courses assigned to you yet.</p>
+              <button onClick={() => setShowAddModal(true)} className="btn-primary mx-auto">
+                <Plus className="h-4 w-4" /> Create your first course
               </button>
-              <button
-                onClick={() => handleDeleteCourse(course.id, course.code)}
-                disabled={deletingId === course.id}
-                className="p-2 text-ink-soft hover:text-red hover:bg-red-light rounded"
-                title="Delete course"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
             </div>
-          </li>
-        ))}
-        {courses.length === 0 && (
-          <div className="card p-6 text-center">
-            <p className="text-sm text-ink-soft mb-3">No courses assigned to you yet.</p>
-            <button onClick={() => setShowAddModal(true)} className="btn-primary mx-auto">
-              <Plus className="h-4 w-4" /> Create your first course
-            </button>
-          </div>
-        )}
-      </ul>
+          )}
+        </ul>
+      </div>
+
+      {/* Class Session History & Excel Reports */}
+      {recentSessions.length > 0 && (
+        <div>
+          <h2 className="mb-3 text-sm font-semibold text-ink flex items-center gap-2">
+            <History className="h-4 w-4 text-ink-soft" /> Class Session History & Excel Reports
+          </h2>
+          <ul className="space-y-2">
+            {recentSessions.map((sessionItem) => (
+              <li key={sessionItem.id} className="card flex items-center justify-between p-3.5 text-xs">
+                <div>
+                  <p className="font-semibold text-ink">{sessionItem.course?.code} — {sessionItem.course?.title}</p>
+                  <p className="text-ink-soft mt-0.5">
+                    Date: {sessionItem.session_date} · Status: <span className={sessionItem.status === 'active' ? 'text-red font-medium' : 'text-ink-soft'}>{sessionItem.status.toUpperCase()}</span>
+                  </p>
+                </div>
+                {sessionItem.status === 'active' ? (
+                  <button onClick={() => navigate(`/scan/${sessionItem.id}`)} className="btn-primary text-xs px-3 py-1.5">
+                    Resume Scanner
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => downloadSessionExcel(sessionItem)}
+                    className="btn-secondary text-xs px-3 py-1.5 flex items-center gap-1.5"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Excel Report
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Shell>
   )
 }
