@@ -125,7 +125,44 @@ export default function LecturerDashboard({ profile }) {
       .select('student:students(id, reg_no, profile:profiles(full_name))')
       .eq('course_id', sessionItem.course_id)
 
-    const roster = (enrolled ?? []).map((e) => e.student).filter(Boolean)
+    const rawStudents = (enrolled ?? []).map((e) => e.student).filter(Boolean)
+    const studentIds = rawStudents.map((s) => s.id)
+
+    const profileMap = new Map()
+    if (studentIds.length > 0) {
+      const { data: profs } = await supabase.from('profiles').select('id, full_name').in('id', studentIds)
+      ;(profs ?? []).forEach((p) => {
+        if (p.full_name) profileMap.set(p.id, p.full_name)
+      })
+
+      const missingIds = studentIds.filter((id) => !profileMap.has(id))
+      if (missingIds.length > 0) {
+        try {
+          const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/profiles`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: missingIds })
+          })
+          if (res.ok) {
+            const { profiles: backendProfs } = await res.json()
+            ;(backendProfs ?? []).forEach((p) => {
+              if (p.full_name) profileMap.set(p.id, p.full_name)
+            })
+          }
+        } catch (e) {
+          console.warn('Backend profile fetch warning:', e)
+        }
+      }
+    }
+
+    const roster = rawStudents.map((s) => {
+      const profName = Array.isArray(s.profile) ? s.profile[0]?.full_name : s.profile?.full_name
+      return {
+        id: s.id,
+        reg_no: s.reg_no || 'N/A',
+        full_name: profName || profileMap.get(s.id) || 'Student'
+      }
+    })
 
     const { data: attRecords } = await supabase
       .from('attendance')

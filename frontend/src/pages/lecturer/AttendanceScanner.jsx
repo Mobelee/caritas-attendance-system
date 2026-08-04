@@ -61,21 +61,8 @@ export default function AttendanceScanner({ profile }) {
       .single()
     setSession(sessionRow)
 
-    const { data: enrolled } = await supabase
-      .from('enrollments')
-      .select('student:students(id, reg_no, face_descriptor, profile:profiles(full_name))')
-      .eq('course_id', sessionRow.course_id)
-
-    setRoster(
-      (enrolled ?? [])
-        .map((e) => e.student)
-        .map((s) => ({
-          id: s.id,
-          reg_no: s.reg_no,
-          full_name: s.profile?.full_name || 'Student',
-          descriptor: s.face_descriptor ? new Float32Array(s.face_descriptor) : null
-        }))
-    )
+    const freshRoster = await fetchRosterForCourse(sessionRow.course_id)
+    setRoster(freshRoster)
 
     // Load existing attendance records for this session
     const { data: existingAtt } = await supabase
@@ -95,6 +82,53 @@ export default function AttendanceScanner({ profile }) {
     if (videoRef.current) videoRef.current.srcObject = stream
 
     intervalRef.current = setInterval(scanFrame, 1200)
+  }
+
+  async function fetchRosterForCourse(courseId) {
+    const { data: enrolled } = await supabase
+      .from('enrollments')
+      .select('student:students(id, reg_no, face_descriptor, profile:profiles(full_name))')
+      .eq('course_id', courseId)
+
+    const rawStudents = (enrolled ?? []).map((e) => e.student).filter(Boolean)
+    const studentIds = rawStudents.map((s) => s.id)
+
+    const profileMap = new Map()
+    if (studentIds.length > 0) {
+      const { data: profs } = await supabase.from('profiles').select('id, full_name').in('id', studentIds)
+      ;(profs ?? []).forEach((p) => {
+        if (p.full_name) profileMap.set(p.id, p.full_name)
+      })
+
+      const missingIds = studentIds.filter((id) => !profileMap.has(id))
+      if (missingIds.length > 0) {
+        try {
+          const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/profiles`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: missingIds })
+          })
+          if (res.ok) {
+            const { profiles: backendProfs } = await res.json()
+            ;(backendProfs ?? []).forEach((p) => {
+              if (p.full_name) profileMap.set(p.id, p.full_name)
+            })
+          }
+        } catch (e) {
+          console.warn('Backend profile fetch warning:', e)
+        }
+      }
+    }
+
+    return rawStudents.map((s) => {
+      const profName = Array.isArray(s.profile) ? s.profile[0]?.full_name : s.profile?.full_name
+      return {
+        id: s.id,
+        reg_no: s.reg_no || 'N/A',
+        full_name: profName || profileMap.get(s.id) || 'Student',
+        descriptor: s.face_descriptor ? new Float32Array(s.face_descriptor) : null
+      }
+    })
   }
 
   async function scanFrame() {
@@ -161,48 +195,7 @@ export default function AttendanceScanner({ profile }) {
     const startTime = session?.actual_start ? new Date(session.actual_start).toLocaleTimeString() : 'N/A'
     const endTime = session?.actual_end ? new Date(session.actual_end).toLocaleTimeString() : new Date().toLocaleTimeString()
 
-    // ── Step 1: fetch enrollment roster ──────────────────────────────
-    // First try via Supabase client (may return null full_names if RLS blocks profile join)
-    const { data: enrolled } = await supabase
-      .from('enrollments')
-      .select('student:students(id, reg_no, profile:profiles(full_name))')
-      .eq('course_id', session.course_id)
-
-    let freshRoster = (enrolled ?? [])
-      .map((e) => e.student)
-      .filter(Boolean)
-      .map((s) => ({
-        id: s.id,
-        reg_no: s.reg_no || 'N/A',
-        full_name: s.profile?.full_name || null
-      }))
-
-    // If any student is missing a name, fill from backend (service-role bypasses RLS)
-    const missingNames = freshRoster.some((s) => !s.full_name)
-    if (missingNames) {
-      try {
-        const studentIds = freshRoster.map((s) => s.id)
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/profiles`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: studentIds })
-        })
-        if (res.ok) {
-          const { profiles: profilesData } = await res.json()
-          const profileMap = new Map((profilesData ?? []).map((p) => [p.id, p.full_name]))
-          freshRoster = freshRoster.map((s) => ({
-            ...s,
-            full_name: s.full_name || profileMap.get(s.id) || s.reg_no || 'Unknown Student'
-          }))
-        }
-      } catch (e) {
-        console.warn('Backend profile fetch failed, using reg_no as name fallback:', e)
-        freshRoster = freshRoster.map((s) => ({
-          ...s,
-          full_name: s.full_name || s.reg_no || 'Unknown Student'
-        }))
-      }
-    }
+    const freshRoster = await fetchRosterForCourse(session.course_id)
 
     // ── Step 2: fetch attendance records ─────────────────────────────
     const { data: attRecords } = await supabase
