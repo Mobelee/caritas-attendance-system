@@ -27,22 +27,44 @@ async function createUser(email, fullName) {
 async function main() {
   console.log('Seeding demo data…')
 
-  // 1. Department
-  let { data: dept } = await supabaseAdmin
-    .from('departments')
-    .select()
-    .eq('code', 'CEE')
-    .single()
+  // 1. Departments — upsert all 5
+  const DEPARTMENTS = [
+    { name: 'Computer Engineering', code: 'CPE' },
+    { name: 'Electrical & Electronics Engineering', code: 'EEE' },
+    { name: 'Mechanical Engineering', code: 'MEE' },
+    { name: 'Chemical Engineering', code: 'CHE' },
+    { name: 'Computer Science', code: 'CSC' },
+  ]
 
-  if (!dept) {
-    const { data: inserted } = await supabaseAdmin
+  let dept // reference to the first dept for the demo lecturer & course
+  for (const d of DEPARTMENTS) {
+    const { data: existing } = await supabaseAdmin
       .from('departments')
-      .insert({ name: 'Computer & Electronic Engineering', code: 'CEE' })
       .select()
+      .eq('code', d.code)
       .single()
-    dept = inserted
+
+    if (!existing) {
+      const { data: inserted } = await supabaseAdmin
+        .from('departments')
+        .insert({ name: d.name, code: d.code })
+        .select()
+        .single()
+      if (d.code === 'CPE') dept = inserted
+      console.log('✓ department created:', d.name, `(${d.code})`)
+    } else {
+      if (d.code === 'CPE') dept = existing
+      console.log('✓ department exists:', existing.name, `(${existing.code})`)
+    }
   }
-  console.log('✓ department:', dept.name, `(${dept.code})`)
+
+  // Use CPE as the demo department
+  if (!dept) {
+    const { data: fallback } = await supabaseAdmin.from('departments').select().eq('code', 'CPE').single()
+    dept = fallback
+  }
+  console.log('✓ demo department:', dept?.name, `(${dept?.code})`)
+
 
   // 2. Lecturer
   const lecturerId = await createUser('lecturer.demo@caritasuni.edu.ng', 'Dr. Ada Nwosu')

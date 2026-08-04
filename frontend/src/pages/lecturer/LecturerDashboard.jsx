@@ -160,12 +160,14 @@ export default function LecturerDashboard({ profile }) {
     roster.forEach((student, index) => {
       const record = attMap.get(student.id)
       const isPresent = Boolean(record)
-      const timeStr = isPresent && record.time ? record.time.toLocaleTimeString() : '-'
-      const methodStr = isPresent ? (record.method === 'manual' ? 'Manual Check' : 'Facial Recognition') : 'N/A'
+      const timeStr = isPresent && record.time
+        ? record.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        : 'N/A'
+      const methodStr = isPresent ? (record.method === 'manual' ? 'Manual Check-In' : 'Facial Recognition') : 'N/A'
 
       reportRows.push([
         index + 1,
-        student.full_name || 'Student',
+        student.profile?.full_name || student.full_name || 'Unknown Student',
         student.reg_no || 'N/A',
         timeStr,
         methodStr,
@@ -176,12 +178,29 @@ export default function LecturerDashboard({ profile }) {
     const sheet = XLSX.utils.aoa_to_sheet(reportRows)
     sheet['!cols'] = [
       { wch: 6 },
-      { wch: 32 },
+      { wch: 34 },
       { wch: 22 },
       { wch: 16 },
       { wch: 24 },
-      { wch: 15 }
+      { wch: 18 }
     ]
+
+    // Protect sheet to make it read-only (uneditable)
+    sheet['!protect'] = {
+      password: '',
+      sheet: true,
+      formatCells: false,
+      formatColumns: false,
+      formatRows: false,
+      insertColumns: false,
+      insertRows: false,
+      insertHyperlinks: false,
+      deleteColumns: false,
+      deleteRows: false,
+      sort: false,
+      autoFilter: false,
+      pivotTables: false
+    }
 
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, sheet, 'Attendance Report')

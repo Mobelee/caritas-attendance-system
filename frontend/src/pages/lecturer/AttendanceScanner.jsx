@@ -147,19 +147,52 @@ export default function AttendanceScanner({ profile }) {
       .update({ status: 'ended', actual_end: new Date().toISOString() })
       .eq('id', sessionId)
 
-    exportExcel()
+    await exportExcel()
     setEnding(false)
     push('Class session ended. Attendance Excel report downloaded!')
     navigate('/')
   }
 
-  function exportExcel() {
+  async function exportExcel() {
+    // Always re-fetch fresh data from DB to avoid stale in-memory state issues
     const deptName = session?.course?.department?.name || 'Computer & Electronic Engineering'
     const courseCode = session?.course?.code || 'CEE 415'
     const courseTitle = session?.course?.title || 'Embedded Systems Design'
     const sessionDate = session?.session_date || new Date().toISOString().slice(0, 10)
     const startTime = session?.actual_start ? new Date(session.actual_start).toLocaleTimeString() : 'N/A'
-    const endTime = new Date().toLocaleTimeString()
+    const endTime = session?.actual_end ? new Date(session.actual_end).toLocaleTimeString() : new Date().toLocaleTimeString()
+
+    // Re-fetch enrolled students with their full profile names
+    const { data: enrolled } = await supabase
+      .from('enrollments')
+      .select('student:students(id, reg_no, profile:profiles(full_name))')
+      .eq('course_id', session.course_id)
+
+    const freshRoster = (enrolled ?? [])
+      .map((e) => e.student)
+      .filter(Boolean)
+      .map((s) => ({
+        id: s.id,
+        reg_no: s.reg_no || 'N/A',
+        full_name: s.profile?.full_name || s.reg_no || 'Unknown Student'
+      }))
+
+    // Re-fetch attendance records for this session
+    const { data: attRecords } = await supabase
+      .from('attendance')
+      .select('student_id, marked_at, method')
+      .eq('session_id', sessionId)
+
+    const attMap = new Map()
+    ;(attRecords ?? []).forEach((r) => {
+      attMap.set(r.student_id, {
+        time: r.marked_at ? new Date(r.marked_at) : null,
+        method: r.method || 'face_recognition'
+      })
+    })
+
+    const totalPresent = attMap.size
+    const totalAbsent = Math.max(0, freshRoster.length - totalPresent)
 
     const reportRows = [
       ['CARITAS UNIVERSITY AMORJI-NIKE'],
@@ -172,16 +205,20 @@ export default function AttendanceScanner({ profile }) {
       ['Session Date:', sessionDate],
       ['Class Duration:', `${startTime} to ${endTime}`],
       ['Academic Session:', '2025/2026 Session'],
-      ['Summary:', `Total Enrolled: ${roster.length} | Total Present: ${marked.size} | Total Absent: ${roster.length - marked.size}`],
+      ['Summary:', `Total Enrolled: ${freshRoster.length} | Total Present: ${totalPresent} | Total Absent: ${totalAbsent}`],
       [''],
       ['S/N', 'Student Full Name', 'Registration Number', 'Time Marked', 'Verification Method', 'Attendance Status']
     ]
 
-    roster.forEach((student, index) => {
-      const record = marked.get(student.id)
+    freshRoster.forEach((student, index) => {
+      const record = attMap.get(student.id)
       const isPresent = Boolean(record)
-      const timeStr = isPresent && record.time ? record.time.toLocaleTimeString() : '-'
-      const methodStr = isPresent ? (record.method === 'manual' ? 'Manual Check' : 'Facial Recognition') : 'N/A'
+      const timeStr = isPresent && record.time
+        ? record.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        : 'N/A'
+      const methodStr = isPresent
+        ? (record.method === 'manual' ? 'Manual Check-In' : 'Facial Recognition')
+        : 'N/A'
 
       reportRows.push([
         index + 1,
@@ -195,15 +232,32 @@ export default function AttendanceScanner({ profile }) {
 
     const sheet = XLSX.utils.aoa_to_sheet(reportRows)
 
-    // Apply auto-fit column widths
+    // Auto-fit column widths
     sheet['!cols'] = [
       { wch: 6 },  // S/N
-      { wch: 32 }, // Student Name
+      { wch: 34 }, // Student Name
       { wch: 22 }, // Registration Number
       { wch: 16 }, // Time Marked
       { wch: 24 }, // Verification Method
-      { wch: 15 }  // Attendance Status
+      { wch: 18 }  // Attendance Status
     ]
+
+    // Protect sheet to make it read-only (uneditable)
+    sheet['!protect'] = {
+      password: '',
+      sheet: true,
+      formatCells: false,
+      formatColumns: false,
+      formatRows: false,
+      insertColumns: false,
+      insertRows: false,
+      insertHyperlinks: false,
+      deleteColumns: false,
+      deleteRows: false,
+      sort: false,
+      autoFilter: false,
+      pivotTables: false
+    }
 
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, sheet, 'Attendance Report')
