@@ -185,10 +185,12 @@ export default function LecturerDashboard({ profile }) {
       { wch: 18 }
     ]
 
-    // Protect sheet to make it read-only (uneditable)
+    // Protect sheet — password locks it in Excel/LibreOffice (read-only)
     sheet['!protect'] = {
-      password: '',
       sheet: true,
+      password: 'CARITAS2026',
+      selectLockedCells: true,
+      selectUnlockedCells: true,
       formatCells: false,
       formatColumns: false,
       formatRows: false,
@@ -199,7 +201,9 @@ export default function LecturerDashboard({ profile }) {
       deleteRows: false,
       sort: false,
       autoFilter: false,
-      pivotTables: false
+      pivotTables: false,
+      objects: false,
+      scenarios: false
     }
 
     const workbook = XLSX.utils.book_new()

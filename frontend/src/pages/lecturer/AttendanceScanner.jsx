@@ -154,7 +154,6 @@ export default function AttendanceScanner({ profile }) {
   }
 
   async function exportExcel() {
-    // Always re-fetch fresh data from DB to avoid stale in-memory state issues
     const deptName = session?.course?.department?.name || 'Computer & Electronic Engineering'
     const courseCode = session?.course?.code || 'CEE 415'
     const courseTitle = session?.course?.title || 'Embedded Systems Design'
@@ -162,22 +161,50 @@ export default function AttendanceScanner({ profile }) {
     const startTime = session?.actual_start ? new Date(session.actual_start).toLocaleTimeString() : 'N/A'
     const endTime = session?.actual_end ? new Date(session.actual_end).toLocaleTimeString() : new Date().toLocaleTimeString()
 
-    // Re-fetch enrolled students with their full profile names
+    // ── Step 1: fetch enrollment roster ──────────────────────────────
+    // First try via Supabase client (may return null full_names if RLS blocks profile join)
     const { data: enrolled } = await supabase
       .from('enrollments')
       .select('student:students(id, reg_no, profile:profiles(full_name))')
       .eq('course_id', session.course_id)
 
-    const freshRoster = (enrolled ?? [])
+    let freshRoster = (enrolled ?? [])
       .map((e) => e.student)
       .filter(Boolean)
       .map((s) => ({
         id: s.id,
         reg_no: s.reg_no || 'N/A',
-        full_name: s.profile?.full_name || s.reg_no || 'Unknown Student'
+        full_name: s.profile?.full_name || null
       }))
 
-    // Re-fetch attendance records for this session
+    // If any student is missing a name, fill from backend (service-role bypasses RLS)
+    const missingNames = freshRoster.some((s) => !s.full_name)
+    if (missingNames) {
+      try {
+        const studentIds = freshRoster.map((s) => s.id)
+        const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/profiles`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: studentIds })
+        })
+        if (res.ok) {
+          const { profiles: profilesData } = await res.json()
+          const profileMap = new Map((profilesData ?? []).map((p) => [p.id, p.full_name]))
+          freshRoster = freshRoster.map((s) => ({
+            ...s,
+            full_name: s.full_name || profileMap.get(s.id) || s.reg_no || 'Unknown Student'
+          }))
+        }
+      } catch (e) {
+        console.warn('Backend profile fetch failed, using reg_no as name fallback:', e)
+        freshRoster = freshRoster.map((s) => ({
+          ...s,
+          full_name: s.full_name || s.reg_no || 'Unknown Student'
+        }))
+      }
+    }
+
+    // ── Step 2: fetch attendance records ─────────────────────────────
     const { data: attRecords } = await supabase
       .from('attendance')
       .select('student_id, marked_at, method')
@@ -242,10 +269,12 @@ export default function AttendanceScanner({ profile }) {
       { wch: 18 }  // Attendance Status
     ]
 
-    // Protect sheet to make it read-only (uneditable)
+    // Protect sheet — password locks it in Excel/LibreOffice (read-only)
     sheet['!protect'] = {
-      password: '',
       sheet: true,
+      password: 'CARITAS2026',
+      selectLockedCells: true,
+      selectUnlockedCells: true,
       formatCells: false,
       formatColumns: false,
       formatRows: false,
@@ -256,7 +285,9 @@ export default function AttendanceScanner({ profile }) {
       deleteRows: false,
       sort: false,
       autoFilter: false,
-      pivotTables: false
+      pivotTables: false,
+      objects: false,
+      scenarios: false
     }
 
     const workbook = XLSX.utils.book_new()

@@ -135,3 +135,34 @@ authRouter.post('/signup-setup', async (req, res) => {
     return res.status(500).json({ error: err.message })
   }
 })
+
+/**
+ * POST /auth/profiles
+ * Bulk-fetch profile full_names by ID list using service-role (bypasses RLS).
+ * Used by the attendance export so lecturers can see student names even when
+ * the profiles RLS policy only allows users to read their own row.
+ */
+authRouter.post('/profiles', async (req, res) => {
+  const { ids } = req.body
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids must be a non-empty array.' })
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('profiles')
+      .select('id, full_name')
+      .in('id', ids)
+
+    if (error) {
+      console.error('[auth/profiles] error:', error.message)
+      return res.status(500).json({ error: error.message })
+    }
+
+    return res.json({ ok: true, profiles: data ?? [] })
+  } catch (err) {
+    console.error('[auth/profiles] catch:', err)
+    return res.status(500).json({ error: err.message })
+  }
+})
