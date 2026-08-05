@@ -7,7 +7,7 @@ import { supabase } from '../../lib/supabase'
 import Shell from '../../components/Shell'
 import { useToast } from '../../hooks/useToast'
 
-const MATCH_THRESHOLD = 0.5 // lower = stricter. Tune against real enrolment data.
+const MATCH_THRESHOLD = 0.6 // 0.6 is standard face-api.js euclidean distance threshold
 const MODEL_URL = '/models/weights' // see /public/models/weights — face-api.js weight files
 
 export default function AttendanceScanner({ profile }) {

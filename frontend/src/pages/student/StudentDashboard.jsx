@@ -8,7 +8,7 @@ import { useToast } from '../../hooks/useToast'
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MODEL_URL = '/models/weights'
-const MATCH_THRESHOLD = 0.5
+const MATCH_THRESHOLD = 0.6
 
 export default function StudentDashboard({ profile }) {
   const [todayClasses, setTodayClasses] = useState([])
@@ -347,11 +347,16 @@ function StudentFaceScanModal({ studentId, activeSession, onClose, onSuccess }) 
           saved = true
         } else {
           console.warn('Client attendance upsert error:', insertError.message)
-          // Automatic fallback to backend service-role API endpoint
-          try {
-            const apiUrl = import.meta.env.VITE_API_URL || ''
-            if (apiUrl && !apiUrl.includes('localhost')) {
-              const res = await fetch(`${apiUrl}/attendance/mark`, {
+          // Try backend candidate URLs (service-role bypasses client RLS)
+          const apiCandidates = [
+            import.meta.env.VITE_API_URL,
+            'https://caritas-attendance-system.onrender.com'
+          ].filter(Boolean)
+
+          for (const baseUrl of apiCandidates) {
+            if (saved) break
+            try {
+              const res = await fetch(`${baseUrl.replace(/\/$/, '')}/attendance/mark`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -362,10 +367,13 @@ function StudentFaceScanModal({ studentId, activeSession, onClose, onSuccess }) 
                 })
               })
               const data = await res.json()
-              if (res.ok && data.ok) saved = true
+              if (res.ok && data.ok) {
+                saved = true
+                break
+              }
+            } catch (e) {
+              console.warn(`Backend fallback to ${baseUrl} failed:`, e)
             }
-          } catch (e) {
-            console.error('Backend fallback error:', e)
           }
         }
 
