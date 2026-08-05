@@ -330,12 +330,13 @@ function StudentFaceScanModal({ studentId, activeSession, onClose, onSuccess }) 
       if (distance < MATCH_THRESHOLD) {
         let saved = false
         const confidenceVal = Number((1 - distance).toFixed(4))
+        const markedAt = new Date().toISOString()
 
         const { error: insertError } = await supabase.from('attendance').upsert(
           {
             session_id: activeSession.id,
             student_id: studentId,
-            marked_at: new Date().toISOString(),
+            marked_at: markedAt,
             method: 'face_recognition',
             confidence: confidenceVal
           },
@@ -345,20 +346,24 @@ function StudentFaceScanModal({ studentId, activeSession, onClose, onSuccess }) 
         if (!insertError) {
           saved = true
         } else {
+          console.warn('Client attendance upsert error:', insertError.message)
           // Automatic fallback to backend service-role API endpoint
           try {
-            const res = await fetch(`${import.meta.env.VITE_API_URL}/attendance/mark`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                session_id: activeSession.id,
-                student_id: studentId,
-                method: 'face_recognition',
-                confidence: confidenceVal
+            const apiUrl = import.meta.env.VITE_API_URL || ''
+            if (apiUrl && !apiUrl.includes('localhost')) {
+              const res = await fetch(`${apiUrl}/attendance/mark`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  session_id: activeSession.id,
+                  student_id: studentId,
+                  method: 'face_recognition',
+                  confidence: confidenceVal
+                })
               })
-            })
-            const data = await res.json()
-            if (res.ok && data.ok) saved = true
+              const data = await res.json()
+              if (res.ok && data.ok) saved = true
+            }
           } catch (e) {
             console.error('Backend fallback error:', e)
           }

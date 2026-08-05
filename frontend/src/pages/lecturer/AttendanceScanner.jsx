@@ -26,8 +26,21 @@ export default function AttendanceScanner({ profile }) {
 
   useEffect(() => {
     init()
+
+    const channel = supabase
+      .channel(`scanner-attendance-${sessionId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'attendance', filter: `session_id=eq.${sessionId}` },
+        () => {
+          loadExistingAttendance()
+        }
+      )
+      .subscribe()
+
     return () => {
       clearInterval(intervalRef.current)
+      supabase.removeChannel(channel)
       const stream = videoRef.current?.srcObject
       stream?.getTracks().forEach((t) => t.stop())
     }
@@ -64,7 +77,15 @@ export default function AttendanceScanner({ profile }) {
     const freshRoster = await fetchRosterForCourse(sessionRow.course_id)
     setRoster(freshRoster)
 
-    // Load existing attendance records for this session
+    await loadExistingAttendance()
+
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+    if (videoRef.current) videoRef.current.srcObject = stream
+
+    intervalRef.current = setInterval(scanFrame, 1200)
+  }
+
+  async function loadExistingAttendance() {
     const { data: existingAtt } = await supabase
       .from('attendance')
       .select('student_id, marked_at, method')
@@ -77,11 +98,6 @@ export default function AttendanceScanner({ profile }) {
       })
       setMarked(attMap)
     }
-
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-    if (videoRef.current) videoRef.current.srcObject = stream
-
-    intervalRef.current = setInterval(scanFrame, 1200)
   }
 
   async function fetchRosterForCourse(courseId) {
